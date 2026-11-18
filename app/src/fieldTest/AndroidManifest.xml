@@ -1,5 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-    <uses-permission android:name="android.permission.SEND_SMS" tools:node="remove" />
-    <uses-permission android:name="android.permission.CALL_PHONE" tools:node="remove" />
+    <!-- Lint reads these merge directives as declarations. Package verification checks the final APK. -->
+    <uses-permission android:name="android.permission.SEND_SMS" tools:node="remove"
+        tools:ignore="PermissionImpliesUnsupportedChromeOsHardware" />
+    <uses-permission android:name="android.permission.CALL_PHONE" tools:node="remove"
+        tools:ignore="PermissionImpliesUnsupportedChromeOsHardware" />
 </manifest>
