@@ -10,7 +10,9 @@ val secrets = Properties().apply {
     val config = rootProject.file("secrets.properties")
     if (config.isFile) config.inputStream().use { load(it) }
 }
-val amapKey = secrets.getProperty("AMAP_KEY", "").trim()
+val fieldTest = providers.gradleProperty("yuntongFieldTest").orNull == "true"
+val fieldSigningStore = providers.gradleProperty("yuntongFieldSigningStore").orNull
+val amapKey = if (fieldTest) "" else secrets.getProperty("AMAP_KEY", "").trim()
 require(amapKey.isEmpty() || amapKey.matches(Regex("[A-Za-z0-9]{32}"))) {
     "AMAP_KEY must be a 32-character Android Key or blank."
 }
@@ -26,8 +28,19 @@ android {
         versionCode = 116
         versionName = "1.0.0-rc17"
         manifestPlaceholders["AMAP_KEY"] = amapKey
+        manifestPlaceholders["APP_LABEL"] = if (fieldTest) "云瞳 · 联调测试" else "云瞳"
         buildConfigField("String", "AMAP_KEY", "\"$amapKey\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+    if (fieldTest) {
+        sourceSets.getByName("debug").manifest.srcFile("src/fieldTest/AndroidManifest.xml")
+        buildTypes.getByName("debug") {
+            applicationIdSuffix = ".fieldtest"
+            versionNameSuffix = "-r01"
+        }
+        if (fieldSigningStore != null) {
+            signingConfigs.getByName("debug").storeFile = rootProject.file(fieldSigningStore)
+        }
     }
     buildFeatures { compose=true; buildConfig=true }
     compileOptions { sourceCompatibility=JavaVersion.VERSION_17; targetCompatibility=JavaVersion.VERSION_17 }
@@ -36,6 +49,11 @@ android {
 }
 
 val bundledModels = listOf("efficientdet-lite0.tflite", "vosk-model-small-cn-0.22.zip")
+if (fieldTest) {
+    androidComponents.beforeVariants(androidComponents.selector().withBuildType("release")) {
+        it.enable = false
+    }
+}
 val prepareModels by tasks.registering {
     doLast {
         val missing = bundledModels.filterNot { layout.projectDirectory.file("src/main/assets/$it").asFile.isFile }

@@ -1,0 +1,10 @@
+{
+  "version": "R01",
+  "packageName": "cn.yuntong.companion.fieldtest",
+  "versionName": "1.0.0-rc17-r01",
+  "versionCode": 116,
+  "sourceCommit": null,
+  "apkSha256": null,
+  "deviceBaseline": "837f31dbd287ab5b0798e0d73c11a9fc25f92b7b",
+  "protocol": "yuntong-rdk-link-v1"
+}

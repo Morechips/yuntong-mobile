@@ -4,6 +4,8 @@
 
 当前代码基线为 `1.0.0-rc17`、`versionCode 116`。这是团队开发候选。真机验收范围见[交接说明](docs/handoff.md)。
 
+参加 Windows 联调，从[测试包发布页](https://github.com/Morechips/yuntong-mobile/releases)下载整包，解压后双击 `开始测试.cmd`。本轮项目、接线与反馈办法见[中文使用说明](field-test/README.md)。
+
 ## 第一次构建
 
 1. 安装 Android Studio、JDK 17 和 Python 3.11 或更高版本。用 SDK Manager 安装 Android SDK Platform 35、API 35 Extension Level 15 和 Build-Tools 35.0.0。Windows 建议将仓库放在较短的纯英文路径，例如 `C:\dev\yuntong-android`。

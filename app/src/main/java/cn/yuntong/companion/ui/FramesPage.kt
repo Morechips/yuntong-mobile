@@ -79,7 +79,7 @@ internal fun FramesPage(c: AppController, s: ScreenState, photoReading: Boolean 
         val file = File(context.filesDir, "recordings").apply { mkdirs() }
             .resolve("${UUID.randomUUID()}.mp4")
         runCatching {
-            val uri = FileProvider.getUriForFile(context, "cn.yuntong.companion.files", file)
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
             pendingPhoneVideo = file.absolutePath
             phoneVideo.launch(Intent(MediaStore.ACTION_VIDEO_CAPTURE)
                 .putExtra(MediaStore.EXTRA_OUTPUT, uri)
