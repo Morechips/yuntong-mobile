@@ -112,12 +112,21 @@ function ConvertTo-DeviceUri([string]$Address, [string]$Mode) {
     return $uri
 }
 
-function Test-DevicePort([Uri]$Uri) {
+function Get-PortState([string]$ComputerName, [int]$Port) {
     $client = [Net.Sockets.TcpClient]::new()
     try {
-        $task = $client.ConnectAsync($Uri.DnsSafeHost, $Uri.Port)
-        return ($task.Wait(3500) -and $client.Connected)
-    } catch { return $false } finally { $client.Close() }
+        $task = $client.ConnectAsync($ComputerName, $Port)
+        if ($task.Wait(2500) -and $client.Connected) { return 'open' }
+        return 'timeout'
+    } catch {
+        $cause = $_.Exception.GetBaseException()
+        if ($cause -is [Net.Sockets.SocketException] -and $cause.SocketErrorCode -eq 'ConnectionRefused') { return 'refused' }
+        return 'unreachable'
+    } finally { $client.Close() }
+}
+
+function Test-DevicePort([Uri]$Uri) {
+    (Get-PortState $Uri.DnsSafeHost $Uri.Port) -eq 'open'
 }
 
 function Test-DeviceHandshake([Uri]$Uri, [string]$Mode, [string]$Token) {
@@ -158,7 +167,7 @@ function Test-DeviceHandshake([Uri]$Uri, [string]$Mode, [string]$Token) {
 }
 
 function Protect-Observation([string]$Text, [string]$Token = '') {
-    if ($Token) { $Text = $Text.Replace($Token, '[已隐藏]') }
+    if ($Token.Trim()) { $Text = $Text.Replace($Token.Trim(), '[已隐藏]') }
     $Text = $Text -replace '(?i)\bBearer\s+\S+', 'Bearer [已隐藏]'
     $Text = $Text -replace '(?i)(?:\b(?:amap[_ -]?key|api[_ -]?key|token|password|secret|authorization|ssid)\b|密钥|密码|口令|凭据|位置|地址|经纬度)\s*[:：=]\s*[^\r\n]+', '[已隐藏]'
     $Text = $Text -replace '(?i)\b(?:https?|wss?)://\S+', '[链接已隐藏]'
@@ -185,4 +194,15 @@ function Get-LogSummary($Adb, $Serial, $Package) {
         "$category $([regex]::Matches($localLog.Out, $categories[$category], 'IgnoreCase').Count)"
     }
     return '最近日志命中次数（仅当前应用进程，最多 250 行） | ' + ($counts -join ' | ')
+}
+
+function Get-MediaSummary($Adb, $Serial, $Package) {
+    $pidText = (Invoke-FieldProcess $Adb @('-s', $Serial, 'shell', 'pidof', '-s', $Package)).Out.Trim()
+    if ($pidText -notmatch '^\d{1,9}$') { return '媒体诊断不可用（应用未运行）' }
+    $log = Invoke-FieldProcess $Adb @('-s', $Serial, 'logcat', '-d', '-t', '250', "--pid=$pidText", '-v', 'brief', 'YuntongMedia:I', '*:S')
+    if ($log.Code -ne 0) { return '媒体诊断不可用（ADB 日志读取失败）' }
+    $markers = [regex]::Matches($log.Out, '(?m)^I/YuntongMedia\(\s*\d+\): (media_(?:connected|reconnecting)|preview_(?:started|stalled|fps=\d{1,3})|capture_(?:requested|displayed|invalid|no_source|not_sent|timeout)|link_lost|media_lost|recording_(?:saved|partial_saved|failed))\r?$')
+    $safe = @($markers | Select-Object -Last 24 | ForEach-Object { $_.Groups[1].Value })
+    if (!$safe) { return '本次日志窗口没有媒体标记' }
+    return '最近媒体事件（跨步骤，最多 24 条） | ' + ($safe -join ' → ')
 }

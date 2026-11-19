@@ -25,7 +25,7 @@ android {
         applicationId = "cn.yuntong.companion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 116
+        versionCode = if (fieldTest) 117 else 116
         versionName = "1.0.0-rc17"
         manifestPlaceholders["AMAP_KEY"] = amapKey
         manifestPlaceholders["APP_LABEL"] = if (fieldTest) "云瞳 · 联调测试" else "云瞳"
@@ -36,7 +36,7 @@ android {
         sourceSets.getByName("debug").manifest.srcFile("src/fieldTest/AndroidManifest.xml")
         buildTypes.getByName("debug") {
             applicationIdSuffix = ".fieldtest"
-            versionNameSuffix = "-r01"
+            versionNameSuffix = "-r02"
         }
         if (fieldSigningStore != null) {
             signingConfigs.getByName("debug").storeFile = rootProject.file(fieldSigningStore)

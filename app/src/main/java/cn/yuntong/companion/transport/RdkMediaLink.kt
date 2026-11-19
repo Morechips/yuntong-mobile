@@ -15,12 +15,14 @@ import org.json.JSONObject
 class RdkMediaLink(
     private val scope: CoroutineScope,
     private val onMessage: (JSONObject) -> Unit,
+    private val onConnection: (Boolean) -> Unit,
 ) {
     private val client = OkHttpClient.Builder().pingInterval(15, TimeUnit.SECONDS).build()
     private var socket: WebSocket? = null
     private var address = ""
     private var token = ""
     private var active = false
+    private var ready = false
     private var subscribed = false
     private var generation = 0
 
@@ -29,14 +31,13 @@ class RdkMediaLink(
         val uri = URI(controlAddress)
         address = URI(uri.scheme, null, uri.host, uri.port, "/rdk/media", null, null).toString()
         this.token = token
-        active = true
-        open()
     }
 
     fun pause() {
         active = false
+        ready = false
         generation++
-        socket?.close(1000, null)
+        socket?.cancel()
         socket = null
     }
 
@@ -53,18 +54,26 @@ class RdkMediaLink(
             Request.Builder().url(address).header("Authorization", "Bearer $token").build(),
             object : WebSocketListener() {
                 override fun onOpen(ws: WebSocket, response: Response) {
-                    if (epoch != generation) return
-                    if (subscribed) ws.send(command("media.subscribe").put("enabled", true).toString())
+                    scope.launch {
+                        if (epoch != generation) return@launch
+                        ready = true
+                        if (subscribed) ws.send(command("media.subscribe").put("enabled", true).toString())
+                        onConnection(true)
+                    }
                 }
 
                 override fun onMessage(ws: WebSocket, text: String) {
-                    if (epoch != generation || text.length > 1_500_000) return
+                    if (text.length > 1_500_000) return
                     val message = runCatching { JSONObject(text) }.getOrNull() ?: return
                     if (message.optString("schema") == DevicePeer.RDK.schema)
                         scope.launch { if (epoch == generation) onMessage(message) }
                 }
 
                 override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) = retry(epoch)
+                override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+                    ws.close(1000, null)
+                    retry(epoch)
+                }
                 override fun onClosed(ws: WebSocket, code: Int, reason: String) = retry(epoch)
             },
         )
@@ -73,18 +82,23 @@ class RdkMediaLink(
     private fun retry(epoch: Int) {
         scope.launch {
             if (!active || epoch != generation) return@launch
+            val retryGeneration = ++generation
+            ready = false
+            socket?.cancel()
+            socket = null
+            onConnection(false)
             delay(3000)
-            if (active && epoch == generation) open()
+            if (active && retryGeneration == generation) open()
         }
     }
 
     fun subscribe(enabled: Boolean) {
         subscribed = enabled
-        socket?.send(command("media.subscribe").put("enabled", enabled).toString())
+        if (ready) socket?.send(command("media.subscribe").put("enabled", enabled).toString())
     }
 
     fun capture(requestId: String): Boolean =
-        socket?.send(command("media.capture").put("requestId", requestId).toString()) == true
+        ready && socket?.send(command("media.capture").put("requestId", requestId).toString()) == true
 
     fun close() {
         pause()

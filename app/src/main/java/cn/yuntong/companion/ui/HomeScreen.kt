@@ -48,11 +48,16 @@ internal fun HomeScreen(
                     open("图像与回放")
                 } else open("拍照识字")
             }
+            "描述场景" in phrase || "场景问答" in phrase -> {
+                c.chooseAssistant("cloud")
+                if (s.peer == cn.yuntong.companion.transport.DevicePeer.RDK) c.captureFromGlasses()
+                open("场景问答")
+            }
             "看前面" in phrase -> {
                 if (s.peer == cn.yuntong.companion.transport.DevicePeer.RDK) c.captureFromGlasses()
                 open("图像与回放")
             }
-            phrase.isNotBlank() -> c.notice("未识别这项操作，可说读字、看前面或求助")
+            phrase.isNotBlank() -> c.notice("未识别这项操作，可说读文字、描述场景、看前面或求助")
         }
     }
     val snackbar = remember { SnackbarHostState() }

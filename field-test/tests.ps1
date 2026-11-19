@@ -34,7 +34,12 @@ $timeout = Invoke-FieldProcess $pwsh @('-NoProfile', '-Command', 'Start-Sleep -S
 Assert $timeout.TimedOut 'Child process timeout'
 
 Assert ((Get-PhoneStatus '').State -eq 'no-adb') 'Missing ADB'
-function Invoke-FieldProcess($Executable, $Arguments) { return $script:fakeAdb }
+function Invoke-FieldProcess($Executable, $Arguments) {
+    if ($Arguments -contains 'pidof' -and $script:fakeAdb.ContainsKey('Log')) {
+        return @{ Code = 0; Out = '1234' }
+    }
+    return $script:fakeAdb
+}
 foreach ($name in @('missing', 'unauthorized', 'offline', 'device', 'multiple', 'adb-error')) {
     $value = switch ($name) {
         missing { '' }
@@ -49,11 +54,25 @@ $script:fakeAdb = @{ Code = 0; Out = '' }
 Assert ((Get-PhoneStatus 'fake.exe').State -eq 'missing') 'Cable interruption'
 $script:fakeAdb.Out = "fake1`tdevice`r`n"
 Assert ((Get-PhoneStatus 'fake.exe').State -eq 'device') 'Retry after reconnect'
+$script:fakeAdb = @{ Code = 0; Log = $true; Out = @'
+I/YuntongMedia( 1234): preview_fps=3
+I/YuntongMedia( 1234): capture_displayed
+I/YuntongMedia( 1234): capture_timeout unexpected-secret
+I/Other( 1234): fake-private-address
+'@ }
+$sample = Get-MediaSummary 'fake.exe' 'fixture' 'fixture.app'
+Assert ($sample -match 'preview_fps=3' -and $sample -match 'capture_displayed' -and
+    $sample -notmatch 'timeout|secret|address') 'Export only allowlisted media diagnostics'
 
 Add-Type -Path "$PSScriptRoot\Relay.cs"
 $server = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
 $server.Start()
-$relay = [FieldRelay]::new('127.0.0.1', $server.LocalEndpoint.Port)
+$port = $server.LocalEndpoint.Port
+$probe = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+$probe.Start()
+try { Assert ((Get-PortState '127.0.0.1' $probe.LocalEndpoint.Port) -eq 'open') 'TCP service reachable' }
+finally { $probe.Stop() }
+$relay = [FieldRelay]::new('127.0.0.1', $port)
 $local = [Net.Sockets.TcpClient]::new()
 $remote = $null
 try {
@@ -85,7 +104,8 @@ foreach ($attempt in 1..2) {
     Assert ($LASTEXITCODE -eq 0) "WinForms smoke run $attempt"
 }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
-$latestZip = Get-ChildItem -LiteralPath (Join-Path $smokeState 'R01-source') -Filter '*.zip' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$meta = Get-Content -LiteralPath "$PSScriptRoot\round.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+$latestZip = Get-ChildItem -LiteralPath (Join-Path $smokeState "$($meta.version)-source") -Filter '*.zip' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $zip = [IO.Compression.ZipFile]::OpenRead($latestZip.FullName)
 try {
     Assert (($zip.Entries.Name | Sort-Object) -join ',' -ceq 'diagnostics.txt,report.md,result.json') 'Export file allowlist'

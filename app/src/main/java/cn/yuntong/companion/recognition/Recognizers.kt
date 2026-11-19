@@ -41,7 +41,7 @@ class LocalRecognition(private val context: Context) {
     suspend fun read(bitmap: Bitmap): String = suspendCancellableCoroutine { c ->
         ocr.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener {
-                if (c.isActive) c.resume(it.text.ifBlank { "没有识别到清晰文字，请重新取景。" })
+                if (c.isActive) c.resume(it.text)
             }
             .addOnFailureListener { if (c.isActive) c.resumeWithException(it) }
     }
@@ -92,8 +92,9 @@ class CloudRecognition(private val context: Context) {
     ): String =
         withContext(Dispatchers.IO) {
             val uri = URI(base)
-            require(uri.scheme == "https" && uri.host != null && uri.userInfo == null) {
-                "识别服务必须使用 HTTPS"
+            require(uri.scheme == "https" && uri.host != null && uri.userInfo == null &&
+                uri.query == null && uri.fragment == null) {
+                "请填写不含查询参数或凭据的 HTTPS 服务地址"
             }
             require(key.isNotBlank() && model.isNotBlank()) { "请先配置服务地址、模型和密钥" }
             val cm = context.getSystemService(ConnectivityManager::class.java)
@@ -108,12 +109,16 @@ class CloudRecognition(private val context: Context) {
             val small =
                 Bitmap.createScaledBitmap(
                     bitmap,
-                    (bitmap.width * scale).toInt(),
-                    (bitmap.height * scale).toInt(),
+                    (bitmap.width * scale).toInt().coerceAtLeast(1),
+                    (bitmap.height * scale).toInt().coerceAtLeast(1),
                     true,
                 )
             val out = ByteArrayOutputStream()
-            small.compress(Bitmap.CompressFormat.JPEG, 85, out)
+            try {
+                check(small.compress(Bitmap.CompressFormat.JPEG, 85, out)) { "无法压缩当前画面" }
+            } finally {
+                if (small !== bitmap) small.recycle()
+            }
             val image =
                 "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
             val content =
@@ -161,7 +166,8 @@ class CloudRecognition(private val context: Context) {
                 call.enqueue(
                     object : Callback {
                         override fun onFailure(call: Call, e: java.io.IOException) {
-                            if (continuation.isActive) continuation.resumeWithException(e)
+                            if (continuation.isActive)
+                                continuation.resumeWithException(java.io.IOException("识别服务连接失败或超时，请检查网络和服务后重试"))
                         }
 
                         override fun onResponse(call: Call, response: Response) {

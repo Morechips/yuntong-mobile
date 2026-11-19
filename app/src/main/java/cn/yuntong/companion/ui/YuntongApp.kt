@@ -99,6 +99,7 @@ fun YuntongApp(c: AppController, requestedPage: String? = null, onPageOpened: ()
     val contentStage =
         when {
             page == "记录与资料" -> "$page:$recordStage"
+            page == "场景问答" -> "$page:${s.assistantTask}:${s.busy}:${s.result.isNotBlank()}"
             page.isNotEmpty() -> page
             tab == 2 -> "${s.assistantTask}:${s.busy}:${s.result.isNotBlank()}"
             tab == 1 -> "${s.navigation.phase}:${s.selected?.id}:${s.route.isNotBlank()}"
@@ -240,6 +241,7 @@ fun YuntongApp(c: AppController, requestedPage: String? = null, onPageOpened: ()
                                 "佩戴与准备" -> PreparationPage(c, s)
                                 "地图服务" -> MapServicePage(c, p)
                                 "助手取图" -> AssistantCapture(c, s, ::goBack)
+                                "场景问答" -> AssistantScreen(c, s, ::openPage)
                                 "资料管理" ->
                                     RecordsManagement(c, records.size) { confirm = "清空全部本机记录" }
                                 "图像与回放" -> FramesPage(c, s)
@@ -405,7 +407,7 @@ internal fun FramePreview(s: ScreenState) {
                 .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(18.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            Text("尚未选取画面")
+            Text(s.frameStatus)
         }
     else
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -445,6 +447,7 @@ internal fun FramePreview(s: ScreenState) {
                 }
             }
             Text(s.frameStatus, style = MaterialTheme.typography.labelLarge)
+            s.previewFps?.let { Text("手机预览约 $it 帧/秒", style = MaterialTheme.typography.bodySmall) }
             if (f.analysis.isNotBlank())
                 Text(
                     "同帧分析：${runCatching{JSONObject(f.analysis).optString("text")}.getOrDefault("")}",

@@ -23,7 +23,8 @@ WebSocket 升级请求带 `Authorization: Bearer <token>`。控制连接先由 A
 ## RDK 媒体
 
 - **实时预览** App 发送 `media.subscribe` 并设置 `enabled`。RDK 在独立连接回 `frame`，包含 `frameId`、`capturedAt` 和 Base64 JPEG 字段 `jpeg`。
-- **主动取图** App 发送 `media.capture` 和 UUID `requestId`。RDK 等候请求后出现的新图，回带同一 `requestId` 的 `frame`。约 2 秒无新图时回 `media.unavailable`。台架上需先启动产出画面的观察任务。
+- **主动取图** App 发送 `media.capture` 和 UUID `requestId`。RDK 等候请求后出现的新图，回带同一 `requestId` 的 `frame`。约 2 秒无新图时回 `media.unavailable`。台架上需先启动产出画面的观察任务。R02 在手机端最多等待约 6.5 秒（含解码），取消、超时、来源切换和断线后的旧回执不会替换画面。
+- **预览帧率** RDK 现有接口大约每 250ms 检查一次 JPEG，Android 显示手机端成功接收、解码并发布的近似帧率。该值用于排障，板端采样和用户实际看到的画面更新另行实测。
 - **本机录像** App 对订阅收到的眼镜画面编码为无声 MP4，本机保存和回放。
 
 ## 双仓分工

@@ -5,6 +5,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class NavigationPublisherTest {
+    @Test fun resumeAndLocationLossDropCachedCoordinates() {
+        var now = 20_000L
+        val publisher = NavigationPublisher { now }
+        publisher.begin("test destination", "amap")
+        assertNotNull(publisher.location(30.0, 120.0, 12f, "GCJ-02"))
+        publisher.transition("paused")
+        publisher.transition("active")
+        assertNull(publisher.state.locationAt)
+        val position = publisher.snapshot()!!.getJSONObject("location")
+        assertTrue(position.isNull("latitude"))
+        assertTrue(position.isNull("longitude"))
+        assertTrue(position.isNull("sampledAt"))
+        now += 20
+        assertNotNull(publisher.location(30.0, 120.0, 10f, "GCJ-02"))
+        publisher.invalidateLocation()
+        assertNull(publisher.state.latitude)
+        assertNotNull(publisher.location(30.0, 120.0, 8f, "GCJ-02"))
+    }
     private fun reply(p: JSONObject) = JSONObject(p.toString())
 
     @Test

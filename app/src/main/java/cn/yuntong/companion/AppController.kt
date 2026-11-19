@@ -19,6 +19,7 @@ import android.os.CancellationSignal
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Base64
+import android.util.Log
 import android.view.accessibility.AccessibilityManager
 import androidx.core.content.ContextCompat
 import androidx.core.location.LocationManagerCompat
@@ -66,6 +67,11 @@ data class ScreenState(
     val busy: Boolean = false,
     val pendingCloud: JSONObject? = null,
     val frameStatus: String = "尚无图像",
+    val previewFps: Int? = null,
+    val captureInProgress: Boolean = false,
+    val captureStatus: String = "",
+    val captureResultId: String? = null,
+    val recognitionStatus: String = "",
     val recordingStatus: String = "未录制",
     val emergencyLocation: String = "尚未获取当前位置",
     val emergencyLocationAt: Long = 0L,
@@ -103,10 +109,17 @@ class AppController(val context: Context) {
     private var demo: Job? = null
     private var streamEnabled = true
     private var frameEpoch = 0
-    private var pendingCaptureId: String? = null
-    private var captureTask: String? = null
-    @Volatile private var recordingChannel: Channel<Bitmap>? = null
-    @Volatile private var clearingRecords = false
+    private val capture = MediaCapture()
+    private var captureDeadline: Job? = null
+    private var captureIntent: String? = null
+    private var previewStartedAt: Long? = null
+    private var previewFrames = 0
+    private var lastPreviewAt: Long? = null
+    private data class PreviewFrame(val json: JSONObject, val source: String, val epoch: Int)
+    private val preview = Channel<PreviewFrame>(Channel.CONFLATED)
+    private var recordingChannel: Channel<Bitmap>? = null
+    private var recordingEndReason = ""
+    private var clearingRecords = false
     private var recordingJob: Job? = null
     private var pendingManualSmsId: String? = null
     private var lastManualSmsId: String? = null
@@ -133,15 +146,15 @@ class AppController(val context: Context) {
                 val lostConnection = connectionReady && peer == null
                 connectionReady = peer != null
                 if (!connectionReady) {
-                    stopRecording()
+                    stopRecording("设备连接中断")
                     media.pause()
-                    pendingCaptureId = null
+                    capture.requestId?.let { captureFailed(it, "link_lost", "设备连接中断，重连后可重新取图") }
                     publisher.forgetReplies()
                     pendingDeviceId = null
                     prepareAfterStart = false
                     rdkSentAt.clear()
                     guidanceAt = 0L
-                    frameEpoch++
+                    resetPreview()
                     speech.stop()
                     if (state.value.pendingCloud != null) cancelRecognition()
                     update {
@@ -152,11 +165,16 @@ class AppController(val context: Context) {
                             delivery = "连接不可用，未确认接收",
                             deviceCommand = null,
                             navigationDelivery = "连接不可用",
+                            frame = frame?.takeUnless { it.isDeviceImage() },
+                            frameStatus = if (frame?.isDeviceImage() == true) "设备已断开，等待新画面" else frameStatus,
                         )
                     }
                 }
                 update { copy(connection = status, peer = peer) }
-                if (peer == DevicePeer.RDK) media.resume()
+                if (peer == DevicePeer.RDK) {
+                    media.subscribe(streamEnabled)
+                    media.resume()
+                }
                 if (
                     lostConnection &&
                         prefs.value.cooperative &&
@@ -170,13 +188,26 @@ class AppController(val context: Context) {
     init {
         scope.launch { prefs.collect { speech.rate = it.rate } }
         scope.launch {
+            for (input in preview) {
+                if (!streamEnabled || input.epoch != frameEpoch) continue
+                val frame = decodeFrame(input.json, input.source)
+                if (frame != null && streamEnabled && input.epoch == frameEpoch) {
+                    if (frame.id == state.value.frame?.id) continue
+                    showPreview(frame)
+                }
+            }
+        }
+        scope.launch {
             while (isActive) {
                 delay(200)
                 val now = System.currentTimeMillis()
                 val monotonicNow = SystemClock.elapsedRealtime()
-                val f = state.value.frame
-                if (streamEnabled && f?.source in setOf("设备测试流", "眼镜实时画面") && now - (f?.receivedAt ?: now) > 4000)
-                    update { copy(frameStatus = "图传中断：最后图像已过期") }
+                if (streamEnabled && lastPreviewAt?.let { monotonicNow - it > 4000 } == true) {
+                    resetPreview()
+                    update { copy(frame = frame?.takeUnless { it.isDeviceImage() }, frameStatus = "图传暂未收到新画面，正在等待恢复") }
+                    stopRecording("图传中断")
+                    Log.i("YuntongMedia", "preview_stalled")
+                }
                 if (state.value.peer == DevicePeer.RDK && statusAt != 0L &&
                     monotonicNow - statusAt > 3000
                 ) {
@@ -194,26 +225,52 @@ class AppController(val context: Context) {
         }
     }
 
-    private val media = RdkMediaLink(scope, ::receiveMedia)
+    private val media = RdkMediaLink(scope, ::receiveMedia) { connected ->
+        Log.i("YuntongMedia", if (connected) "media_connected" else "media_reconnecting")
+        if (connected && streamEnabled) {
+            lastPreviewAt = SystemClock.elapsedRealtime()
+            update { copy(frameStatus = "已连接媒体通道，等待新画面") }
+        } else if (!connected) {
+            capture.requestId?.let { captureFailed(it, "media_lost", "媒体连接中断，恢复后可重新取图") }
+            resetPreview()
+            stopRecording("媒体连接中断")
+            if (streamEnabled) update {
+                copy(frame = frame?.takeUnless { it.isDeviceImage() }, frameStatus = "媒体通道正在重连")
+            }
+        }
+    }
 
     private fun receiveMedia(msg: JSONObject) {
         when (msg.optString("type")) {
             "frame" -> {
                 val requestId = msg.optString("requestId")
                 if (requestId.isNotEmpty()) {
-                    if (requestId != pendingCaptureId) return
-                    pendingCaptureId = null
-                    decodeFrame(msg, "眼镜新画面", captureTask)
-                    captureTask = null
+                    if (!capture.claimFrame(requestId)) return
+                    val followUp = captureIntent
+                    update { copy(captureStatus = "已收到眼镜新图，正在载入") }
+                    scope.launch {
+                        val frame = decodeFrame(msg, "眼镜新画面")
+                        if (frame == null) {
+                            captureFailed(requestId, "capture_invalid", "新画面无法读取，请重新取图")
+                            return@launch
+                        }
+                        if (!capture.finish(requestId)) return@launch
+                        captureDeadline?.cancel()
+                        update {
+                            copy(frame = frame, frameStatus = "已定格 · 眼镜新画面",
+                                captureStatus = "取图成功，已显示眼镜新画面",
+                                captureInProgress = false, captureResultId = requestId)
+                        }
+                        Log.i("YuntongMedia", "capture_displayed")
+                        if (followUp == "ocr") recognize("ocr", readAloud = true)
+                        else speak(state.value.captureStatus, automatic = true, source = "取图状态")
+                    }
                 } else if (streamEnabled && state.value.peer == DevicePeer.RDK) {
-                    decodeFrame(msg, "眼镜实时画面")
+                    preview.trySend(PreviewFrame(msg, "眼镜实时画面", frameEpoch))
                 }
             }
-            "media.unavailable" -> if (msg.optString("requestId") == pendingCaptureId) {
-                pendingCaptureId = null
-                captureTask = null
-                notice("眼镜暂未送来新画面，请检查观察状态或使用手机相机")
-            }
+            "media.unavailable" -> captureFailed(msg.optString("requestId"), "capture_no_source",
+                "眼镜未提供新画面，请检查静默观察与相机连接，再重试")
         }
     }
 
@@ -430,14 +487,19 @@ class AppController(val context: Context) {
 
     fun connect(address: String, token: String) {
         runCatching {
+                WebSocketDeviceLink.validate(address.trim(), token.trim())
                 cancelRecognition()
-                streamEnabled = true
-                frameEpoch++
+                val peer = DevicePeer.forAddress(address.trim())
+                streamEnabled = peer == DevicePeer.TEST
+                resetPreview()
+                cancelCapture()
+                media.close()
                 update {
-                    copy(frame = null, findings = emptyList(), result = "", frameStatus = "等待设备图像")
+                    copy(frame = null, findings = emptyList(), result = "", frameStatus = "等待设备图像",
+                        captureStatus = "", captureResultId = null)
                 }
                 link.connect(address.trim(), token.trim())
-                if (DevicePeer.forAddress(address.trim()) == DevicePeer.RDK)
+                if (peer == DevicePeer.RDK)
                     media.connect(address.trim(), token.trim())
                 secrets.put("deviceAddress", address.trim())
                 secrets.put("deviceToken", token.trim())
@@ -448,6 +510,7 @@ class AppController(val context: Context) {
 
     fun disconnect() {
         stopRecording()
+        cancelCapture()
         media.close()
         link.close()
         cancelRecognition()
@@ -483,8 +546,8 @@ class AppController(val context: Context) {
                 lastAckSequence = 0
                 publisher.forgetReplies()
                 statusAt = SystemClock.elapsedRealtime()
-                if (state.value.peer == DevicePeer.RDK)
-                    update { copy(frameStatus = "眼镜已连接，可打开实时画面") }
+                if (state.value.peer == DevicePeer.RDK && !streamEnabled && state.value.frame == null)
+                    update { copy(frameStatus = "眼镜已连接，可打开实时画面或主动取图") }
                 val snapshot = publisher.snapshot()
                 val locationAge = System.currentTimeMillis() - (publisher.state.locationAt ?: 0L)
                 if (state.value.peer == DevicePeer.RDK &&
@@ -586,7 +649,8 @@ class AppController(val context: Context) {
             }
             "fall.confirmed" -> handleConfirmedFall(msg)
             "frame" -> {
-                if (streamEnabled && state.value.peer == DevicePeer.TEST) decodeFrame(msg, "设备测试流")
+                if (streamEnabled && state.value.peer == DevicePeer.TEST)
+                    preview.trySend(PreviewFrame(msg, "设备测试流", frameEpoch))
             }
             "recognition.request" -> {
                 if (state.value.peer != DevicePeer.TEST) return
@@ -603,11 +667,11 @@ class AppController(val context: Context) {
                     if (
                         f != null &&
                             connectionReady &&
-                            System.currentTimeMillis() - f.receivedAt < 5000
+                            SystemClock.elapsedRealtime() - f.receivedAt < 5000
                     ) {
                         cancelRecognition()
                         streamEnabled = false
-                        frameEpoch++
+                        resetPreview()
                         update {
                             copy(
                                 pendingCloud = msg,
@@ -882,112 +946,175 @@ class AppController(val context: Context) {
             ArrayList(parts.indices.map { receipt("delivered", it) }))
     }
 
-    private fun decodeFrame(msg: JSONObject, source: String, afterCapture: String? = null) {
+    private suspend fun decodeFrame(msg: JSONObject, source: String): ImageFrame? {
         val encoded = msg.optString("jpeg")
-        if (encoded.length > 2_000_000) return
-        val epoch = ++frameEpoch
-        scope.launch {
-            val bitmap =
-                withContext(Dispatchers.Default) {
-                    runCatching {
-                            val bytes = Base64.decode(encoded, Base64.DEFAULT)
-                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                            require(bounds.outWidth in 1..4096 && bounds.outHeight in 1..4096)
-                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        }
-                        .getOrNull()
-                }
-            if (bitmap != null && streamEnabled && epoch == frameEpoch) {
-                update {
-                    copy(
-                        frame =
-                            ImageFrame(
-                                msg.optString("frameId"),
-                                bitmap,
-                                source,
-                                System.currentTimeMillis(),
-                                msg.optJSONObject("analysis")?.toString(2) ?: "",
-                            ),
-                        frameStatus = "正在接收 · $source",
-                        findings = emptyList(),
-                    )
-                }
-                if (afterCapture != null) recognize(afterCapture)
-                if (source == "眼镜实时画面") recordingChannel?.trySend(bitmap)
-            }
+        val id = msg.optString("frameId")
+        if (id.isBlank() || encoded.isEmpty() || encoded.length > 2_000_000) return null
+        val received = SystemClock.elapsedRealtime()
+        val bitmap = withContext(Dispatchers.Default) {
+            runCatching {
+                val bytes = Base64.decode(encoded, Base64.DEFAULT)
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                require(bounds.outWidth in 1..4096 && bounds.outHeight in 1..4096)
+                var sample = 1
+                while (maxOf(bounds.outWidth, bounds.outHeight) / sample > 1600) sample *= 2
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                    BitmapFactory.Options().apply { inSampleSize = sample })
+            }.getOrNull()
+        } ?: return null
+        return ImageFrame(id, bitmap, source, received, msg.optJSONObject("analysis")?.toString() ?: "")
+    }
+
+    private fun showPreview(frame: ImageFrame) {
+        val now = SystemClock.elapsedRealtime()
+        lastPreviewAt = now
+        val started = previewStartedAt ?: now.also {
+            previewStartedAt = it
+            Log.i("YuntongMedia", "preview_started")
         }
+        previewFrames++
+        var fps = state.value.previewFps
+        if (now - started >= 2000) {
+            val measured = (1000.0 * (previewFrames - 1) / (now - started) + 0.5).toInt()
+            if (fps != measured) Log.i("YuntongMedia", "preview_fps=$measured")
+            fps = measured
+            previewStartedAt = now
+            previewFrames = 1
+        }
+        update { copy(frame = frame, frameStatus = "正在接收 · ${frame.source}",
+            previewFps = fps, findings = emptyList()) }
+        if (frame.source == "眼镜实时画面") recordingChannel?.trySend(frame.bitmap)
+    }
+
+    private fun resetPreview() {
+        frameEpoch++
+        lastPreviewAt = null
+        previewStartedAt = null
+        previewFrames = 0
+        update { copy(previewFps = null) }
     }
 
     fun stream(enabled: Boolean) {
         if (!enabled) stopRecording()
+        cancelCapture()
         streamEnabled = enabled
         if (state.value.peer == DevicePeer.RDK) media.subscribe(enabled)
-        frameEpoch++
+        resetPreview()
+        if (enabled) lastPreviewAt = SystemClock.elapsedRealtime()
         cancelRecognition()
+        update { copy(frameStatus = if (enabled) "等待设备新画面" else "已暂停图传 · 保留上一张画面",
+            captureStatus = if (enabled) "" else captureStatus) }
         notice(if (enabled) "已切换到设备图传" else "已暂停接收画面")
     }
 
     fun startRecording() {
-        if (recordingChannel != null || state.value.peer != DevicePeer.RDK) {
+        if (recordingJob?.isActive == true || state.value.peer != DevicePeer.RDK || clearingRecords) {
             notice("请先连接眼镜，且一次只录制一段")
             return
         }
         stream(true)
         val channel = Channel<Bitmap>(Channel.CONFLATED)
         recordingChannel = channel
+        recordingEndReason = ""
         update { copy(recordingStatus = "正在录制眼镜画面") }
-        recordingJob = scope.launch(Dispatchers.IO) {
-            val folder = File(context.filesDir, "recordings").apply { mkdirs() }
-            val file = File(folder, "${UUID.randomUUID()}.mp4")
-            val saved = runCatching {
-                val recorder = GlassesRecorder(file)
-                var completed = false
-                try {
-                    withTimeoutOrNull(300_000) { for (frame in channel) recorder.append(frame) }
-                } finally {
-                    completed = recorder.finish()
+        recordingJob = scope.launch {
+            val id = UUID.randomUUID().toString()
+            val file = File(context.filesDir, "recordings/$id.mp4")
+            try {
+                val reachedLimit = withContext(Dispatchers.IO) {
+                    file.parentFile?.mkdirs()
+                    val recorder = GlassesRecorder(file)
+                    var valid: Boolean
+                    val completed = try {
+                        withTimeoutOrNull(300_000) {
+                            for (frame in channel) recorder.append(frame)
+                            true
+                        }
+                    } finally {
+                        valid = recorder.finish()
+                    }
+                    check(valid) { "没有可播放的视频帧" }
+                    completed == null
                 }
-                completed
-            }.getOrDefault(false)
-            if (recordingChannel === channel) recordingChannel = null
-            if (saved && !clearingRecords) {
-                save("录像", java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.CHINA).format(java.util.Date()),
-                    file.absolutePath, "眼镜实时画面")
-                withContext(Dispatchers.Main) { update { copy(recordingStatus = "录像已保存") } }
-            } else {
-                file.delete()
-                withContext(Dispatchers.Main) { update { copy(recordingStatus = "录像失败，请重试") } }
+                check(!clearingRecords)
+                update { copy(recordingStatus = "正在保存录像") }
+                val title = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.CHINA).format(java.util.Date())
+                db.records().put(Record(id, "录像", title, file.absolutePath, "眼镜实时画面"))
+                val reason = if (reachedLimit) "已达 5 分钟上限" else recordingEndReason
+                update { copy(recordingStatus = if (reason.isBlank()) "录像已保存" else "$reason，已保存可播放片段") }
+                Log.i("YuntongMedia", if (reason.isBlank()) "recording_saved" else "recording_partial_saved")
+            } catch (e: CancellationException) {
+                withContext(NonCancellable + Dispatchers.IO) { file.delete() }
+                throw e
+            } catch (_: Exception) {
+                withContext(Dispatchers.IO) { file.delete() }
+                update { copy(recordingStatus = "录像未保存，请检查画面和本机存储后重试") }
+                Log.i("YuntongMedia", "recording_failed")
+            } finally {
+                channel.cancel()
+                recordingChannel = null
             }
         }
     }
 
-    fun stopRecording() {
-        recordingChannel?.close()
-        if (recordingChannel != null) update { copy(recordingStatus = "正在保存录像") }
+    fun stopRecording(reason: String = "") {
+        val channel = recordingChannel ?: return
+        if (channel.close()) {
+            recordingEndReason = reason
+            update { copy(recordingStatus = "正在保存录像") }
+        }
     }
 
-    fun captureFromGlasses(task: String? = null) {
+    fun captureFromGlasses(task: String? = null): String? {
         if (state.value.peer != DevicePeer.RDK) {
             notice("请先连接眼镜")
-            return
+            return null
         }
         val id = UUID.randomUUID().toString()
+        if (!capture.begin(id)) return null
+        stopRecording()
+        cancelRecognition()
         media.subscribe(false)
-        streamEnabled = true
-        frameEpoch++
-        pendingCaptureId = id
-        captureTask = task
+        streamEnabled = false
+        resetPreview()
+        captureIntent = task
+        update { copy(frame = null, findings = emptyList(), result = "", captureInProgress = true,
+            captureStatus = "正在请求眼镜拍摄新画面", captureResultId = null, frameStatus = "等待新画面") }
         if (!media.capture(id)) {
-            pendingCaptureId = null
-            captureTask = null
-            notice("眼镜画面连接中，请稍后重试")
-        } else notice("已请求眼镜拍摄新画面")
+            captureFailed(id, "capture_not_sent", "媒体通道尚未就绪，请稍后重试")
+            return null
+        }
+        Log.i("YuntongMedia", "capture_requested")
+        update { copy(captureStatus = "已请求，正在等待眼镜新画面") }
+        speak("正在等待眼镜新画面", automatic = true, source = "取图状态")
+        captureDeadline = scope.launch {
+            delay(6500)
+            captureFailed(id, "capture_timeout", "等待眼镜新画面超时，请重试")
+        }
+        return id
+    }
+
+    private fun captureFailed(id: String, event: String, message: String) {
+        if (!capture.finish(id)) return
+        captureDeadline?.cancel()
+        update { copy(captureInProgress = false, captureStatus = message, frameStatus = "本次未取得新画面") }
+        Log.i("YuntongMedia", event)
+        speak(message, automatic = true, source = "取图状态")
+    }
+
+    fun cancelCapture() {
+        if (capture.requestId == null) return
+        capture.cancel()
+        captureDeadline?.cancel()
+        update { copy(captureInProgress = false, captureStatus = "已取消取图", frameStatus = "尚未取得新画面") }
     }
 
     fun setImage(bitmap: Bitmap, source: String) {
+        cancelCapture()
         streamEnabled = false
-        frameEpoch++
+        media.subscribe(false)
+        resetPreview()
         cancelRecognition()
         update {
             copy(
@@ -996,9 +1123,11 @@ class AppController(val context: Context) {
                         UUID.randomUUID().toString(),
                         bitmap,
                         source,
-                        System.currentTimeMillis(),
+                        SystemClock.elapsedRealtime(),
                     ),
                 frameStatus = source,
+                captureStatus = "",
+                captureResultId = null,
                 findings = emptyList(),
                 result = "",
             )
@@ -1067,7 +1196,7 @@ class AppController(val context: Context) {
         recognitionEpoch++
         recognition?.cancel()
         recognition = null
-        update { copy(busy = false, pendingCloud = null) }
+        update { copy(busy = false, pendingCloud = null, recognitionStatus = "") }
         speech.stop()
     }
 
@@ -1076,14 +1205,14 @@ class AppController(val context: Context) {
         notice("识别已取消，可以重新取景或返回助手功能。")
     }
 
-    fun recognize(kind: String, prompt: String = "请描述当前场景", target: String = "") {
+    fun recognize(kind: String, prompt: String = "请描述当前场景", target: String = "", readAloud: Boolean = false) {
         val f =
             state.value.frame
                 ?: run {
                     notice("请先拍照、选择图片或连接图传")
                     return
                 }
-        if (f.source in setOf("设备测试流", "眼镜实时画面", "眼镜新画面") && System.currentTimeMillis() - f.receivedAt > 5000) {
+        if (f.source in setOf("设备测试流", "眼镜实时画面") && SystemClock.elapsedRealtime() - f.receivedAt > 5000) {
             notice("画面已过期，请重新取景")
             return
         }
@@ -1098,8 +1227,9 @@ class AppController(val context: Context) {
         val epoch = recognitionEpoch
         // Freeze the selected frame while a result is being produced and reviewed.
         streamEnabled = false
+        stopRecording()
         if (state.value.peer == DevicePeer.RDK) media.subscribe(false)
-        frameEpoch++
+        resetPreview()
         update {
             copy(
                 busy = true,
@@ -1110,6 +1240,7 @@ class AppController(val context: Context) {
                 findings = emptyList(),
                 frameStatus = "已定格 · ${f.source}",
                 pendingCloud = pending,
+                        recognitionStatus = "正在识别所选画面",
             )
         }
         recognition =
@@ -1141,15 +1272,23 @@ class AppController(val context: Context) {
                         }
                     ensureActive()
                     if (epoch != recognitionEpoch || state.value.frame?.id != f.id) return@launch
+                    if (kind == "ocr" && result.isBlank()) {
+                        val hint = "没有识别到清晰文字，请调整光线、距离和对焦，再重新取景。"
+                        update { copy(busy = false, recognitionStatus = hint) }
+                        notice(hint, important = true)
+                        return@launch
+                    }
                     update {
                         copy(
                             result = result,
                             findings = findings,
                             busy = false,
                             pendingCloud = null,
+                            recognitionStatus = "识别完成",
                         )
                     }
                     notice("识别完成。结果已显示，可选择朗读内容、收藏或重新取景。")
+                    if (readAloud) speak(result, automatic = true, source = "助手 · 读文字")
                     save(
                         if (kind == "ocr") "识字" else "识别",
                         result.take(40),
@@ -1180,8 +1319,9 @@ class AppController(val context: Context) {
                                     .put("frameId", f.id)
                                     .put("status", "failed")
                             )
-                        update { copy(busy = false, pendingCloud = null) }
-                        notice(e.message ?: "识别失败，请重试")
+                        val hint = e.message ?: "识别失败，请重试"
+                        update { copy(busy = false, pendingCloud = null, recognitionStatus = hint) }
+                        notice(hint, important = true)
                     }
                 }
             }
@@ -1422,6 +1562,7 @@ class AppController(val context: Context) {
                 if (navigating && state.value.navigationIssue != "定位信号较弱") {
                     speech.stop()
                     publisher.forgetReplies()
+                    publisher.invalidateLocation()
                     transmit(publisher.action("location.unavailable"))
                     transmit(publisher.progress("", null, null))
                     update { copy(guidance = "", navigationIssue = "定位信号较弱") }
@@ -1488,18 +1629,26 @@ class AppController(val context: Context) {
             .onFailure { notice(it.message ?: "启动失败") }
     }
 
-    fun pauseNavigation() {
+    fun pauseNavigation() = setNavigationPaused(publisher.state.phase == "active")
+
+    fun setNavigationPaused(pause: Boolean, refreshNotification: Boolean = true) {
         if (publisher.state.phase !in setOf("active", "paused")) return
-        val pause = publisher.state.phase == "active"
-        if (pause) amap?.pause() else amap?.resume()
+        if (pause == (publisher.state.phase == "paused")) return
+        try {
+            if (pause) amap?.pause() else amap?.resume()
+        } catch (_: Exception) {
+            notice("地图未能切换导航状态，请打开云瞳重试", important = true)
+            return
+        }
         speech.stop()
         transmit(publisher.transition(if (pause) "paused" else "active"))
         update { copy(guidance = "", guidanceExpired = false) }
         speechPolicy.reset()
+        if (refreshNotification && navigating && publisher.state.source == "amap") service(location = true)
         notice(if (pause) "导航已暂停" else "导航已恢复", important = true)
     }
 
-    fun stopNavigation() {
+    fun stopNavigation(refreshNotification: Boolean = true) {
         demo?.cancel()
         amap?.stop()
         planning = false
@@ -1522,11 +1671,12 @@ class AppController(val context: Context) {
             )
         }
         if (!connectionReady) context.stopService(Intent(context, SessionService::class.java))
+        else if (refreshNotification) service(location = false)
         notice("本次导航已结束")
     }
 
     fun stopAll() {
-        stopNavigation()
+        stopNavigation(refreshNotification = false)
         disconnect()
         cancelRecognition()
         context.stopService(Intent(context, SessionService::class.java))

@@ -130,7 +130,7 @@ internal fun FramesPage(c: AppController, s: ScreenState, photoReading: Boolean 
         }
     }
     if (camera && photoReading)
-        CameraCapture(c, captured = { c.recognize("ocr") }, textGuidance = true) { camera = false }
+        CameraCapture(c, captured = { c.recognize("ocr", readAloud = true) }, textGuidance = true) { camera = false }
     Section("图像来源", "预览画面默认仅在内存中；主动保存画面或录像才会写入本机。") {
         Action("使用手机相机", Icons.Outlined.CameraAlt, primary = true) {
             video = null
@@ -152,7 +152,8 @@ internal fun FramesPage(c: AppController, s: ScreenState, photoReading: Boolean 
             else phoneVideoPermission.launch(Manifest.permission.CAMERA)
         }
         if (s.peer == cn.yuntong.companion.transport.DevicePeer.RDK)
-            Action("拍摄眼镜新画面", Icons.Outlined.PhotoCamera) {
+            Action(if (s.captureStatus.isBlank()) "拍摄眼镜新画面" else "重新拍摄眼镜新画面",
+                Icons.Outlined.PhotoCamera, enabled = !s.captureInProgress) {
                 camera = false
                 video = null
                 c.captureFromGlasses()
@@ -167,24 +168,39 @@ internal fun FramesPage(c: AppController, s: ScreenState, photoReading: Boolean 
     if (camera && !photoReading) CameraCapture(c) { camera = false }
     video?.let { VideoPlayback(it, c) }
     Section("当前画面") {
+        CaptureFeedback(c, s)
         FramePreview(s)
         Action("保存当前画面", Icons.Outlined.Save, enabled = s.frame != null, onClick = c::saveFrame)
         Action("识别当前画面文字", Icons.Outlined.TextFields, enabled = s.frame != null && !s.busy) {
-            c.recognize("ocr")
+            c.recognize("ocr", readAloud = true)
         }
-        if (s.result.isNotBlank()) {
+        if (s.recognitionStatus.isNotBlank()) Text(s.recognitionStatus)
+        if (s.result.isNotBlank() && s.resultFrameId == s.frame?.id) {
             Text(s.result)
             SpeechControls(c, s.result, "助手 · 读文字")
+            Action("保存识别文字", Icons.Outlined.BookmarkBorder) {
+                c.save("收藏", s.result.take(30), s.result, s.frame?.source ?: "手机")
+                c.notice("已加入资料收藏")
+            }
         }
     }
-    if (s.peer == cn.yuntong.companion.transport.DevicePeer.RDK) {
+    if (s.peer == cn.yuntong.companion.transport.DevicePeer.RDK || s.recordingStatus != "未录制") {
         Section("眼镜录像", s.recordingStatus) {
             Action("开始录制", Icons.Outlined.FiberManualRecord,
-                enabled = s.recordingStatus !in setOf("正在录制眼镜画面", "正在保存录像")) { c.startRecording() }
+                enabled = s.peer == cn.yuntong.companion.transport.DevicePeer.RDK &&
+                    s.recordingStatus !in setOf("正在录制眼镜画面", "正在保存录像")) { c.startRecording() }
             Action("停止并保存", Icons.Outlined.Stop,
                 enabled = s.recordingStatus == "正在录制眼镜画面") { c.stopRecording() }
         }
     }
+}
+
+@Composable
+internal fun CaptureFeedback(c: AppController, s: ScreenState) {
+    if (s.captureStatus.isNotBlank())
+        Text(s.captureStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+    if (s.captureInProgress)
+        Action("取消等待新画面", Icons.Outlined.Close, onClick = c::cancelCapture)
 }
 
 @Composable
@@ -396,7 +412,13 @@ internal fun VideoPlayback(uri: Uri, c: AppController) {
         }
     var playing by remember(uri) { mutableStateOf(false) }
     val lifecycle = LocalLifecycleOwner.current
+    var playbackError by remember(uri) { mutableStateOf(false) }
     DisposableEffect(player, lifecycle) {
+        val listener = object : androidx.media3.common.Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
+            override fun onPlayerError(error: androidx.media3.common.PlaybackException) { playbackError = true }
+        }
+        player.addListener(listener)
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
                 player.pause()
@@ -406,10 +428,15 @@ internal fun VideoPlayback(uri: Uri, c: AppController) {
         lifecycle.lifecycle.addObserver(observer)
         onDispose {
             lifecycle.lifecycle.removeObserver(observer)
+            player.removeListener(listener)
             player.release()
         }
     }
     Section("本地视频回放", "暂停后可提取当前时间附近的一帧进行识字或找物。") {
+        if (playbackError) {
+            Text("暂时无法播放这段录像", Modifier.semantics { liveRegion = LiveRegionMode.Polite })
+            Action("重试播放", Icons.Outlined.Replay) { playbackError = false; player.prepare(); player.play() }
+        }
         AndroidView(
             {
                 PlayerView(context).apply {
@@ -425,7 +452,6 @@ internal fun VideoPlayback(uri: Uri, c: AppController) {
             if (playing) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
         ) {
             if (playing) player.pause() else player.play()
-            playing = !playing
         }
         Action("后退10秒", Icons.Outlined.Replay10) {
             player.seekTo((player.currentPosition - 10000).coerceAtLeast(0))

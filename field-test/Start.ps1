@@ -56,6 +56,7 @@ if ($loaded) {
 $phone = @{ State = 'missing'; Serial = '' }
 $modeIds = @('phone', 'lan', 'usb', 'sim')
 $modeNames = @('手机独立', '真实 RDK（手机局域网）', '真实 RDK（USB 转发）', '模拟 RDK（电脑模拟端）')
+$groupNames = @('连接与媒体 · 12–18 分钟', '录像与回放 · 8–12 分钟', '识字与场景 · 10–15 分钟', '导航与无障碍 · 15–25 分钟')
 $phoneStatus = @{
     'no-adb' = '未找到 ADB。点击「准备 ADB」下载所需组件。'
     'adb-error' = 'ADB 未响应。重新连接 USB 后点击「重新检查」。'
@@ -69,10 +70,20 @@ $phoneStatus = @{
 $cases = @{
     install = @('安装与启动', '连接手机并允许 USB 调试。点击「重新检查」核对版本；如缺少该包，点击「安装本轮 APK」。', '桌面出现「云瞳 · 联调测试」图标。点「打开测试应用」后进入云瞳首页，原有云瞳也可从桌面打开。', 45)
     connect = @('连接与状态', '确认 RDK 和眼镜已上电。点击「重新检查」；需要时点击「检查协议」核对服务，随后在手机上配对。', '手机打开「我的 → 设备与连接」，把窗口给出的地址和本地配对密钥填进手机，再点「连接」。手机应显示已连接，且能读取眼镜状态。', 20)
-    preview = @('实时预览', '手机已连接真实 RDK，眼镜已上电。若观察已经从其他入口运行，请由原入口处理。', '在「设备与连接」点击「启动眼镜静默观察」（最多等 45 秒）。回首页点「查看画面 → 继续接收设备图传」。移动静止台架前的纸卡，确认手机画面跟随变化，记录卡顿或空档。', 60)
-    capture = @('主动取新图', '已看到实时画面。准备两张无个人信息、不同字母的纸卡。', '在「查看画面」点击「暂停接收并保留当前画面」。换一张纸卡，再点「拍摄眼镜新画面」。看到新卡才选通过。若仍是旧卡、无新图或超时，点失败并记录提示。', 5)
+    preview = @('实时预览', '连接真机并在手机启动眼镜静默观察。启动至多等待 45 秒。', '到「查看画面」打开图传，移动台架前的纸卡，确认画面更新并记录两次手机预览帧率和肉眼可见的卡顿。', 60)
+    capture = @('主动取新图', '准备两张不同纸卡，保持预览开启。', '镜头对准另一张纸卡，直接点「拍摄眼镜新画面」。核对等待、成功状态和画面。成功后移回第一张卡，确认定格未被预览覆盖，再重取。', 8)
+    noframe = @('无新图与重试', '保持手机已连接，停止本轮静默观察。', '请求新画面，应提示无新图或超时，并可重试。重新启动观察，重试后看到新卡。记录提示、等待秒数及重试效果。', 8)
+    reconnect = @('断线后恢复', '台架静止，保持观察运行，在手机打开图传。', 'USB 模式在电脑停止转发，观察手机状态。重新建立后使用新地址重新连接，再确认预览和主动取图。直连模式可暂时断开手机 Wi-Fi 再恢复。', 45)
     stop = @('停止观察', '只停止本轮从手机开启的观察任务。', '在「我的 → 设备与连接」点「停止眼镜观察」，等待状态显示已停止。使用 USB 转发时，确认后再点击电脑「停止转发」。', 20)
     sim = @('模拟端连接与画面', '使用团队事先启动的 Android 仓库电脑模拟端。只在界面选择模拟模式。', '在手机填入当轮模拟端地址及测试令牌，连接后点「查看画面 → 继续接收设备图传」。观察示例画面与模拟连接标识。', 25)
+    glassesVideo = @('真实眼镜录像', '连接真实眼镜、开启观察并确认画面正在更新。', '在「查看画面」开始录制并移动纸卡。10 秒后停止并保存，到「本机录像」播放，确认动作可见、无声及来源正确。', 30)
+    partialVideo = @('录像中断与保存', '开始真实眼镜录像，至少录下 5 秒可见画面。', '停止本轮 USB 转发或断开手机网络，等 App 提示中断。到「本机录像」验证保存的片段能播放。重连后再试一次短录。', 40)
+    phoneVideo = @('手机相机录像', '无需 RDK，准备有变化的场景。', '在「查看画面」点「使用手机录像」，按相机界面录一小段并确认。回本机录像检查来源标签和播放。', 30)
+    ocr = @('读文字与朗读', '准备一张大字清晰的纸，另准备一张无字纸。可用手机相机或真实眼镜。', '首页语音说「读文字」或从页面主动拍照。核对本次文字、停止与重读、保存收藏，再换无字纸重做，检查提示。记录用的画面来源。', 40)
+    cloud = @('场景问答', '需要团队配置 HTTPS 视觉服务、模型和密钥。缺少时标无法测试。', '首页语音说「描述场景」，拍照或选图。先取消上传，再确认一张无隐私的图。核对回答和朗读，再验证网络失败提示。', 40)
+    amap = @('高德步行与协同', '需维护者提供签名与 Key 匹配的地图验收包。缺少时标无法测试。', '有人陪同，选安全短路线，核对定位、暂停恢复、偏航、锁屏通知和结束。眼镜协同时记录 RDK 回执。', 120)
+    talkback = @('TalkBack 流程', '在手机辅助功能开启 TalkBack，需要时请陪同。', '用焦点操作从首页进入连接、取图与读字、暂停朗读、返回首页。核对等待和失败提示是否读出，焦点有无丢失。', 60)
+    sos = @('求助语音练习', '主动进入「紧急求助」的练习模式。保持正式守候和自动短信关闭。', '练习中说两次「紧急求助」，听到确认后在 10 秒内说「取消求助」。记录提示、计时和取消；无需拨号或短信。', 30)
 }
 
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -114,7 +125,7 @@ function Run-Ui($Caption, [scriptblock]$Action) {
     if ($script:busy) { return }
     $script:busy = $true
     $status.Text = $Caption
-    foreach ($control in @($mode, $address, $pairing, $list, $notes, $deviceVersions) + $buttons.ToArray()) { $control.Enabled = $false }
+    foreach ($control in @($mode, $address, $pairing, $group, $list, $notes, $deviceVersions) + $buttons.ToArray()) { $control.Enabled = $false }
     try {
         $form.Refresh()
         & $Action
@@ -122,7 +133,7 @@ function Run-Ui($Caption, [scriptblock]$Action) {
         $status.Text = '操作未完成。请重新检查，或用「无法测试」记录当前步骤。'
         Add-Evidence '工具操作异常'
     } finally {
-        foreach ($control in @($mode, $address, $pairing, $list, $notes, $deviceVersions) + $buttons.ToArray()) { $control.Enabled = $true }
+        foreach ($control in @($mode, $address, $pairing, $group, $list, $notes, $deviceVersions) + $buttons.ToArray()) { $control.Enabled = $true }
         $script:busy = $false
     }
 }
@@ -138,7 +149,7 @@ $mode = Place ([Windows.Forms.ComboBox]::new()) 96 13 245 26
 $mode.DropDownStyle = 'DropDownList'
 $mode.AccessibleName = '连接方式'
 $null = $mode.Items.AddRange($modeNames)
-$null = New-Label '服务地址' 357 16 76 25
+$null = New-Label 'RDK/服务' 357 16 76 25
 $address = Place ([Windows.Forms.TextBox]::new()) 432 13 309 26
 $address.AccessibleName = 'RDK 或模拟端服务地址'
 $null = New-Button '复制手机地址' 751 9 151 { Copy-PhoneAddress }
@@ -157,7 +168,10 @@ $null = New-Button '使用 USB 转发' 654 84 248 { Run-Ui '正在建立 USB 转
 $status = New-Label '等待检查' 14 122 895 79
 $status.BorderStyle = 'FixedSingle'
 
-$null = New-Label '测试项' 14 215 140 23
+$group = Place ([Windows.Forms.ComboBox]::new()) 14 211 221 25
+$group.DropDownStyle = 'DropDownList'
+$group.AccessibleName = '选择可独立执行的测试组'
+$null = $group.Items.AddRange($groupNames)
 $list = Place ([Windows.Forms.ListBox]::new()) 14 241 221 228
 $list.AccessibleName = '测试项'
 $guide = Place ([Windows.Forms.TextBox]::new()) 250 211 652 147
@@ -207,7 +221,7 @@ function Save-Session {
     $payload = [ordered]@{
         sessionId = $sessionId; tests = @($entries.Values | Sort-Object key)
         diagnostics = @($events.ToArray()); deviceVersions = Protect-Observation $deviceVersions.Text $pairing.Text
-        android = $script:installed; phone = $script:latestPhone; app = $script:latestApp
+        android = $script:installed; phone = $script:latestPhone; app = $script:latestApp; group = $group.SelectedIndex
     }
     Write-TextFile $statePath ($payload | ConvertTo-Json -Depth 6)
     $selected = Current-Mode
@@ -232,10 +246,16 @@ function Show-Case {
     } finally { $script:loading = $false }
 }
 function Show-CaseList {
-    $script:visibleCases = switch (Current-Mode) {
-        'phone' { @('install') }
-        'sim' { @('install', 'sim') }
-        default { @('install', 'connect', 'preview', 'capture', 'stop') }
+    $real = (Current-Mode) -in @('usb','lan')
+    $script:visibleCases = switch ($group.SelectedIndex) {
+        1 { if ($real) { 'glassesVideo'; 'partialVideo'; 'stop' }; 'phoneVideo' }
+        2 { 'ocr'; 'cloud' }
+        3 { 'amap'; 'talkback'; 'sos' }
+        default {
+            'install'
+            if ($real) { 'connect'; 'preview'; 'capture'; 'noframe'; 'reconnect'; 'stop' }
+            if ((Current-Mode) -eq 'sim') { 'sim' }
+        }
     }
     $script:visibleCases = @($script:visibleCases)
     $list.Items.Clear()
@@ -271,6 +291,7 @@ function Mark-Case($Outcome) {
         Run-Ui '正在整理本项诊断…' {
             $prior = $phoneStatus[$script:phone.State]
             Add-Evidence (Get-LogSummary $script:adb $script:phone.Serial $appId)
+            Add-Evidence (Get-MediaSummary $script:adb $script:phone.Serial $appId)
             $status.Text = "$prior 已保存本项结果。"
         }
     } else { $status.Text = '已保存本项。' }
@@ -338,12 +359,17 @@ function Check-Setup {
         $uri = ConvertTo-DeviceUri $address.Text (Current-Mode)
         if (!$uri) {
             $network = '请填写有效地址。手机直连 ws:// 请用局域网 IPv4；RDK 用 /rdk，模拟端用 /link。'
-        } elseif (Test-DevicePort $uri) {
-            $network = '电脑可以连接服务端口。点击「检查协议」核实服务，或直接在手机配对。'
-            Add-Evidence '设备端口可连接'
         } else {
-            $network = '电脑连不到服务端口。核对 RDK／眼镜供电、电脑网络和服务是否已启动，再重新检查。'
-            Add-Evidence '设备端口超时或拒绝连接'
+            $port = Get-PortState $uri.DnsSafeHost $uri.Port
+            $ssh = if ($port -ne 'open' -and (Current-Mode) -in @('lan','usb')) { Get-PortState $uri.DnsSafeHost 22 } else { '未检查' }
+            $network = if ($port -eq 'open') {
+                '电脑已连通服务端口。手机能否连接由 App 配对结果确认。'
+            } elseif ($ssh -eq 'open') {
+                "SSH 可达，RDK $($uri.Port) 不通。检查服务是否运行、是否只监听回环。见中文说明。"
+            } else {
+                '电脑无法连通服务。核对网线或 Wi-Fi、地址和板端服务，见中文说明。'
+            }
+            Add-Evidence "电脑服务端口 $port | SSH $ssh"
         }
     }
     $transfer = ''
@@ -367,7 +393,7 @@ function Check-Protocol {
     if ($token -cnotmatch '^[!-~]{16,128}$') { $status.Text = '电脑协议检查需填 16–128 位的英文字符密钥，中间无空格。也可直接在手机配对。'; return }
     $result = Test-DeviceHandshake $uri $selected $token
     switch ($result) {
-        accepted { $status.Text = '服务握手、协议和连接类别符合预期。接下来在手机上验证。' }
+        accepted { $status.Text = '电脑协议握手通过。请在手机完成配对并确认状态。' }
         denied { $status.Text = '服务拒绝配对或握手。核对地址、密钥和设备软件版本。' }
         unexpected { $status.Text = '服务响应与本轮协议不符。核对设备包版本和所选连接方式。' }
         default { $status.Text = '协议检查超时或被拒绝。核对服务、密钥和连接地址；若手机已连接，先在手机断开再检查。' }
@@ -549,7 +575,7 @@ function Export-Results([bool]$CreateZip) {
             $lines += "### $modeName · $($cases[$parts[1]][0])", '', "结果 $($entry.status)", "开始 $($entry.started) | 结束 $($entry.ended)", "现象 $($entry.notes)", "本机截图数 $($entry.screenshots)", ''
         }
         if (!$record.tests) { $lines += '尚无人工结果。' }
-        $lines += '日志仅含分类、次数和时间。截图默认保留在本机。'
+    $lines += '日志包含分类、次数和预设的媒体事件。截图默认保留在本机。'
         $logLines = $record.diagnostics | ForEach-Object { "$($_.time) | $($_.mode) | $($_.message)" }
         Write-TextFile (Join-Path $directory 'report.md') ($lines -join "`r`n")
         Write-TextFile (Join-Path $directory 'result.json') ($record | ConvertTo-Json -Depth 8)
@@ -585,7 +611,9 @@ try {
     $mode.SelectedIndex = if ($savedConfig -and $savedConfig.mode -in $modeIds) { [array]::IndexOf($modeIds, $savedConfig.mode) } else { 1 }
     if ($savedConfig) { $address.Text = $savedConfig.address }
     if ($loaded) { $deviceVersions.Text = $loaded.deviceVersions }
+    $group.SelectedIndex = if ($loaded -and $loaded.PSObject.Properties['group'] -and $loaded.group -in (0..3)) { $loaded.group } else { 0 }
     $list.Add_SelectedIndexChanged({ Show-Case })
+    $group.Add_SelectedIndexChanged({ Show-CaseList; Save-Session })
     $mode.Add_SelectedIndexChanged({
         Show-CaseList
         Save-Session
@@ -622,14 +650,16 @@ try {
         }
     })
     $form.Add_Shown({ if (!$SmokeTest) { Run-Ui '正在检查当前环境…' { Check-Setup } } })
-    $counter.Text = "测试包 $($round.version) · 约 15–25 分钟。只验证安装、连接、预览和取图。`r`n首次允许 USB 调试和 USB 安装时，在手机上按屏幕提示操作。"
+    $counter.Text = "测试包 $($round.version) · 在左侧下拉选择测试组。各组可分次完成，测试现象会自动保存。`r`n首次允许 USB 调试和 USB 安装时，在手机上按屏幕提示操作。"
     if ($SmokeTest) {
         $null = $form.Handle
         Check-Setup
         $expected = '测试保存与恢复'
         if ($loaded) {
-            if ($notes.Text -cne $expected) { throw 'Smoke restore failed' }
+            if ($group.SelectedIndex -ne 2 -or $notes.Text -cne $expected) { throw 'Smoke restore failed' }
         } else {
+            $group.SelectedIndex = 2
+            if ((Current-Case) -ne 'ocr') { throw 'Smoke group selection failed' }
             $notes.Text = $expected
             Save-Session
         }

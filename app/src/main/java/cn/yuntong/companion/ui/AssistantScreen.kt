@@ -109,12 +109,15 @@ internal fun AssistantScreen(c: AppController, s: ScreenState, open: (String) ->
             else -> "每次只上传你确认的这一张画面。"
         },
     )
+    CaptureFeedback(c, s)
     if (s.busy) {
         LinearProgressIndicator(Modifier.fillMaxWidth())
         Text("正在识别所选画面", Modifier.semantics { liveRegion = LiveRegionMode.Polite })
         Action("取消识别", Icons.Outlined.Close, onClick = c::cancelRecognitionByUser)
         return
     }
+    if (s.recognitionStatus.isNotBlank())
+        Text(s.recognitionStatus, Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     s.frame?.let {
         Image(
             it.bitmap.asImageBitmap(),
@@ -157,10 +160,16 @@ internal fun AssistantScreen(c: AppController, s: ScreenState, open: (String) ->
             else -> "确认画面并提问"
         },
         Icons.Outlined.PlayArrow,
-        enabled = s.frame != null && (task != "cloud" || prompt.isNotBlank()),
+        enabled = !s.captureInProgress && s.frame != null && (task != "cloud" || prompt.isNotBlank()),
         primary = true,
     ) {
-        if (task == "cloud") upload = s.frame!!.id to "" else c.recognize(task, target = target)
+        if (task == "cloud") {
+            val current = c.state.value.frame
+            if (current != null && current.id == s.frame?.id) {
+                c.stream(false)
+                upload = current.id to ""
+            }
+        } else c.recognize(task, target = target, readAloud = task == "ocr")
     }
     if (picking)
         TargetPicker(
@@ -222,12 +231,10 @@ private fun TargetPicker(current: String, select: (String) -> Unit, close: () ->
 internal fun AssistantCapture(c: AppController, s: ScreenState, done: () -> Unit) {
     val context = LocalContext.current
     var camera by remember { mutableStateOf(false) }
-    var glassesRequestBefore by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(s.frame?.id, glassesRequestBefore) {
-        if (glassesRequestBefore != null && s.frame?.id != glassesRequestBefore &&
-            s.frame?.source == "眼镜新画面") {
-            glassesRequestBefore = null
-            c.stream(false)
+    var requestId by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(s.captureResultId, requestId) {
+        if (requestId != null && s.captureResultId == requestId && s.frame?.source == "眼镜新画面") {
+            requestId = null
             done()
         }
     }
@@ -246,6 +253,7 @@ internal fun AssistantCapture(c: AppController, s: ScreenState, done: () -> Unit
         }
     else {
         FlowTitle("选取画面", "画面确认后，回到刚才的识别任务。")
+        CaptureFeedback(c, s)
         Action("打开相机", Icons.Outlined.CameraAlt, primary = true) {
             c.stream(false)
             if (
@@ -257,9 +265,9 @@ internal fun AssistantCapture(c: AppController, s: ScreenState, done: () -> Unit
         }
         Action("选择本地图片", Icons.Outlined.Image) { picker.launch("image/*") }
         if (s.peer == cn.yuntong.companion.transport.DevicePeer.RDK)
-            Action("拍摄眼镜新画面", Icons.Outlined.Videocam) {
-                glassesRequestBefore = s.frame?.id ?: ""
-                c.captureFromGlasses()
+            Action(if (s.captureStatus.isBlank()) "拍摄眼镜新画面" else "重新拍摄眼镜新画面",
+                Icons.Outlined.Videocam, enabled = !s.captureInProgress) {
+                requestId = c.captureFromGlasses()
             }
         if (s.frame != null) {
             FramePreview(s)

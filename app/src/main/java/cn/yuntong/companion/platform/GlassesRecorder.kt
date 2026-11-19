@@ -11,12 +11,17 @@ import java.io.File
 class GlassesRecorder(private val file: File) {
     private val width = 640
     private val height = 480
-    private val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
     private val muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+    private val codec = try {
+        MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    } catch (e: Exception) {
+        muxer.release()
+        throw e
+    }
     private val info = MediaCodec.BufferInfo()
     private var track = -1
     private var started = false
-    private var frames = 0
+    private var writtenFrames = 0
     private val startedAt = System.nanoTime()
 
     init {
@@ -26,8 +31,13 @@ class GlassesRecorder(private val file: File) {
             setInteger(MediaFormat.KEY_FRAME_RATE, 4)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
         }
-        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        codec.start()
+        try {
+            codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            codec.start()
+        } catch (e: Exception) {
+            try { codec.release() } finally { muxer.release() }
+            throw e
+        }
     }
 
     fun append(source: Bitmap) {
@@ -65,7 +75,6 @@ class GlassesRecorder(private val file: File) {
         }
         codec.queueInputBuffer(input, 0, width * height * 3 / 2,
             (System.nanoTime() - startedAt) / 1000, 0)
-        frames++
         drain(false)
     }
 
@@ -75,12 +84,13 @@ class GlassesRecorder(private val file: File) {
             if (input >= 0) codec.queueInputBuffer(input, 0, 0,
                 (System.nanoTime() - startedAt) / 1000, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             drain(true)
-            return started && frames > 0
+            return writtenFrames > 0
         } finally {
-            codec.stop()
-            codec.release()
-            if (started) muxer.stop()
-            muxer.release()
+            try {
+                try { codec.stop() } finally { codec.release() }
+            } finally {
+                try { if (started) muxer.stop() } finally { muxer.release() }
+            }
         }
     }
 
@@ -98,11 +108,12 @@ class GlassesRecorder(private val file: File) {
                     started = true
                 }
                 else -> if (output >= 0) {
-                    if (info.size > 0 && started) {
+                    if (info.size > 0 && started && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
                         val bytes = codec.getOutputBuffer(output) ?: error("视频编码结果不可用")
                         bytes.position(info.offset)
                         bytes.limit(info.offset + info.size)
                         muxer.writeSampleData(track, bytes, info)
+                        writtenFrames++
                     }
                     val done = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                     codec.releaseOutputBuffer(output, false)

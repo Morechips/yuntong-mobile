@@ -10,7 +10,9 @@ data class ImageFrame(
     val source: String,
     val receivedAt: Long,
     val analysis: String = "",
-)
+) {
+    fun isDeviceImage() = source in setOf("设备测试流", "眼镜实时画面", "眼镜新画面")
+}
 
 interface FrameSource {
     val frame: StateFlow<ImageFrame?>

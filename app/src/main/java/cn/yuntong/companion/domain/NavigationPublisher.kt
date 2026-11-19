@@ -28,7 +28,7 @@ class NavigationPublisher(private val clock: () -> Long = System::currentTimeMil
 
     private var sequence = 0L
     private var routeGeneration = 0
-    private var lastLocationTime = 0L
+    private var lastLocationTime: Long? = null
     private val sent = linkedMapOf<Long, Pair<String, Int>>()
     private var lastResultSequence = 0L
     private val issuedAt = linkedMapOf<Long, Long>()
@@ -45,7 +45,7 @@ class NavigationPublisher(private val clock: () -> Long = System::currentTimeMil
             )
         sequence = 0
         routeGeneration = 1
-        lastLocationTime = 0
+        lastLocationTime = null
         sent.clear()
         issuedAt.clear()
         lastResultSequence = 0
@@ -100,8 +100,9 @@ class NavigationPublisher(private val clock: () -> Long = System::currentTimeMil
                 coordinateSystem = coord,
                 locationAt = clock(),
             )
-        if (clock() - lastLocationTime < 1000) return null
-        lastLocationTime = clock()
+        val now = clock()
+        if (lastLocationTime?.let { now - it in 0L..999L } == true) return null
+        lastLocationTime = now
         return envelope("navigation.location")
     }
 
@@ -109,10 +110,16 @@ class NavigationPublisher(private val clock: () -> Long = System::currentTimeMil
         require(phase in setOf("paused", "active", "ended"))
         check(state.sessionId.isNotEmpty() && state.phase != "ended")
         state = state.copy(phase = phase, instruction = "")
+        if (phase != "paused") invalidateLocation()
         sent.clear()
         issuedAt.clear()
         lastResultSequence = sequence
         return envelope("session.$phase")
+    }
+
+    fun invalidateLocation() {
+        state = state.copy(latitude = null, longitude = null, accuracy = null, locationAt = null)
+        lastLocationTime = null
     }
 
     fun snapshot(): JSONObject? =
